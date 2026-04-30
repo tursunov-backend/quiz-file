@@ -2,6 +2,7 @@
 quiz_runner.py — Countdown, savollar, natija
 """
 import asyncio
+import time as _time
 import random
 import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -36,34 +37,40 @@ async def wait_for_answer_or_timeout(
     uid: int,
     session: dict,
     is_group: bool,
+    poll_sent_at: float = 0.0,
 ) -> bool:
+    """
+    poll_sent_at — poll yuborilgan vaqt (asyncio.get_event_loop().time()).
+    Network latency ni hisobga olib, qolgan vaqtni aniq kutadi.
+    """
+    wait = seconds or DEFAULT_PAUSE
+
     if not is_group:
+        # Yakka rejim: javob kelsa darhol o'tsin, vaqt tugasa to'xta
         event = asyncio.Event()
         _poll_answered[uid] = event
         try:
-            end_time = asyncio.get_event_loop().time() + (seconds or DEFAULT_PAUSE)
-            while True:
-                if session.get("state") in ("idle", "paused"):
-                    return False
-                remaining = end_time - asyncio.get_event_loop().time()
-                if remaining <= 0:
-                    break
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(event.wait()),
-                        timeout=min(1.0, remaining),
-                    )
-                    break
-                except asyncio.TimeoutError:
-                    continue
+            elapsed   = asyncio.get_event_loop().time() - poll_sent_at
+            remaining = max(0.0, wait - elapsed)
+            try:
+                await asyncio.wait_for(event.wait(), timeout=remaining)
+            except asyncio.TimeoutError:
+                pass
+            if session.get("state") in ("idle", "paused"):
+                return False
         finally:
             _poll_answered.pop(uid, None)
     else:
-        wait_sec = (seconds or DEFAULT_PAUSE) + 1
-        for _ in range(wait_sec):
+        # Guruh rejimi: poll ning open_period tugashini aniq kutish
+        elapsed   = asyncio.get_event_loop().time() - poll_sent_at
+        remaining = max(0.0, wait - elapsed)
+        deadline  = asyncio.get_event_loop().time() + remaining
+        while asyncio.get_event_loop().time() < deadline:
             if session.get("state") in ("idle", "paused"):
                 return False
-            await asyncio.sleep(1)
+            sleep_time = min(0.5, deadline - asyncio.get_event_loop().time())
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
 
     return session.get("state") not in ("idle", "paused")
 
@@ -164,7 +171,7 @@ async def send_batch(
         return
 
     questions        = batches[batch_index]
-    open_time        = session["open_time"]
+    open_time        = session.get("open_time") or 30  # None bo'lsa default 30 sek
     total_in_batch   = len(questions)
     stats            = session["stats"]
     no_answer_streak = 0
@@ -184,6 +191,9 @@ async def send_batch(
         mid          = None
         pid          = None
 
+        # Poll yuborilgan aniq vaqtni olish
+        poll_sent_at      = asyncio.get_event_loop().time()  # wait uchun
+        poll_sent_at_real = _time.time()                     # elapsed uchun
         try:
             sent = await context.bot.send_poll(
                 chat_id           = chat_id,
@@ -201,6 +211,7 @@ async def send_batch(
             poll_owner[f"{pid}:correct"]    = correct_id
             poll_owner[f"{pid}:chat_id"]    = chat_id
             poll_owner[f"{pid}:message_id"] = mid
+            poll_owner[f"{pid}:sent_at_real"] = poll_sent_at_real  # real clock, guruh elapsed uchun
             active_poll[uid]                = pid
 
             stats["total"]   += 1
@@ -213,7 +224,8 @@ async def send_batch(
 
         answered_before = stats.get("correct", 0) + stats.get("wrong", 0)
 
-        ok = await wait_for_answer_or_timeout(open_time, uid, session, is_group)
+        # poll_sent_at uzatiladi — vaqtni aniq hisoblash uchun
+        ok = await wait_for_answer_or_timeout(open_time, uid, session, is_group, poll_sent_at)
 
         if mid is not None:
             try:
