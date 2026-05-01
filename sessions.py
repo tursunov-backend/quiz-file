@@ -34,13 +34,14 @@ def _empty_stats() -> dict:
 def _run_async(coro) -> None:
     """Sync funksiyadan async DB chaqiruvi uchun."""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            asyncio.ensure_future(coro)
-        else:
-            loop.run_until_complete(coro)
-    except Exception as e:
-        log.warning("DB async xato: %s", e)
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        # Running loop yo'q — background thread da chaqirilgan
+        try:
+            asyncio.run(coro)
+        except Exception as e:
+            log.warning("DB async xato: %s", e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
