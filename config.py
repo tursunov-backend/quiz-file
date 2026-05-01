@@ -7,10 +7,15 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=Path(".env"))
 
-TG_TOKEN      = os.environ["TG_TOKEN"]
+# Bot username (.env da yozing, @ belgisisiz)
+# Masalan: BOT_USERNAME=QuizBot
+TG_TOKEN     = os.getenv("TG_TOKEN", "YOUR_BOT_TOKEN")
+BOT_USERNAME = os.getenv("BOT_USERNAME", "YourBotUsername")
+
 BATCH_SIZE    = 30
 DEFAULT_PAUSE = 2
 
-# Bot username (.env da yozing, @ belgisisiz)
-# Masalan: BOT_USERNAME=QuizBot
-BOT_USERNAME = os.getenv("BOT_USERNAME", "")
+# PostgreSQL
+DATABASE_URL = os.getenv(
+    "DATABASE_URL"
+)

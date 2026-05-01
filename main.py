@@ -7,7 +7,8 @@ from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, InlineQueryHandler, PollAnswerHandler, filters,
 )
-from config import TG_TOKEN
+from config import TG_TOKEN, DATABASE_URL
+from database import init_db, close_db
 from handlers import (
     cmd_start, cmd_newquiz, cmd_myquiz, cmd_stop, cmd_help,
     handle_menu_buttons, handle_text, handle_file,
@@ -24,6 +25,9 @@ log = logging.getLogger(__name__)
 
 
 async def post_init(app) -> None:
+    # PostgreSQL ulanish
+    await init_db(DATABASE_URL)
+
     await app.bot.set_my_commands([
         BotCommand("newquiz", "Yangi test yaratish"),
         BotCommand("myquiz",  "Joriy test holati"),
@@ -33,18 +37,31 @@ async def post_init(app) -> None:
     await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
-def main() -> None:
-    app = ApplicationBuilder().token(TG_TOKEN).post_init(post_init).build()
+async def post_shutdown(app) -> None:
+    await close_db()
 
+
+def main() -> None:
+    app = (
+        ApplicationBuilder()
+        .token(TG_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
+    )
+
+    # Private chat buyruqlari
     app.add_handler(CommandHandler("start",   cmd_start,   filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("newquiz", cmd_newquiz, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("myquiz",  cmd_myquiz,  filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("stop",    cmd_stop,    filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help",    cmd_help,    filters=filters.ChatType.PRIVATE))
 
+    # Guruh buyruqlari
     app.add_handler(CommandHandler("start", handle_group_start, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("stop",  cmd_stop,           filters=filters.ChatType.GROUPS))
 
+    # Callback handlerlar
     app.add_handler(CallbackQueryHandler(handle_lang,          pattern=r"^(newquiz|myquiz|show_lang|lang:)"))
     app.add_handler(CallbackQueryHandler(handle_batch_size,    pattern=r"^bsize:"))
     app.add_handler(CallbackQueryHandler(handle_time_choice,   pattern=r"^time:"))
@@ -57,8 +74,11 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_stats,         pattern=r"^stats:"))
     app.add_handler(CallbackQueryHandler(handle_group_ready,   pattern=r"^gready:"))
 
+    # Inline va poll
     app.add_handler(InlineQueryHandler(handle_inline_query))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
+
+    # Xabar handlerlar
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_bot_added))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_file))
 

@@ -39,7 +39,8 @@ def _get_chat_id(update: Update) -> int | None:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid  = update.effective_user.id
-    lang = get_session(uid).get("lang", "uz")
+    from sessions import load_user_lang
+    lang = await load_user_lang(uid)
 
     if context.args:
         param = context.args[0]
@@ -169,7 +170,10 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 reply_markup = group_result_kb(),
             )
         except Exception:
-            await update.message.reply_text(text, reply_markup=group_result_kb())
+            await update.message.reply_text(
+                text,
+                reply_markup = group_result_kb(),
+            )
         return
 
     # Yakka test
@@ -190,7 +194,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elapsed = get_elapsed(uid)
     save_solo_result(uid, correct, elapsed)
 
-    result_text      = build_result_text(uid)
+    result_text = build_result_text(uid)
     session["state"] = "idle"
     await cancel_quiz_task(uid, context)
 
@@ -353,6 +357,10 @@ async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     total     = sum(len(b) for b in batches)
     lang      = session.get("lang", "uz")
 
+    # DB ga saqlash
+    from sessions import save_quiz_db
+    await save_quiz_db(uid)
+
     await query.edit_message_text(
         t(lang, "batches_ready", time=time_text, name=quiz_name, total=total, batches=len(batches)),
         parse_mode="Markdown",
@@ -374,6 +382,12 @@ async def handle_start_batch(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     uid = update.effective_user.id
+
+    log.info(
+        "handle_start_batch | uid=%s | data=%s | inline_msg=%s | msg_chat=%s",
+        uid, query.data, query.inline_message_id,
+        query.message.chat_id if query.message else None,
+    )
 
     is_inline = query.inline_message_id is not None and query.message is None
     chat_id   = query.message.chat_id if query.message else None
@@ -549,6 +563,8 @@ async def handle_resume_batch(update: Update, context: ContextTypes.DEFAULT_TYPE
     batch_index = int(parts[1])
     start_idx   = int(parts[2]) if len(parts) > 2 else 0
 
+    log.info("RESUME: batch_index=%s start_idx=%s", batch_index, start_idx)
+
     session["state"] = "running"
 
     try:
@@ -584,7 +600,7 @@ async def handle_stop_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     elapsed = get_elapsed(uid)
     save_solo_result(uid, correct, elapsed)
 
-    text             = build_result_text(uid)
+    text = build_result_text(uid)
     session["state"] = "idle"
     await cancel_quiz_task(uid, context)
 
@@ -629,7 +645,9 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     from telegram import InlineQueryResultArticle, InputTextMessageContent
     import uuid
 
-    query   = update.inline_query
+    query = update.inline_query
+    log.info("INLINE QUERY keldi: uid=%s, query=%s", query.from_user.id, query.query)
+
     uid     = query.from_user.id
     session = get_session(uid)
     batches = session.get("batches", [])
@@ -765,7 +783,7 @@ async def handle_group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ready_set.add(voter_uid)
     count = len(ready_set)
 
-    if count < 1:
+    if count < 2:
         owner_uid   = g_session["owner_uid"]
         quiz_name   = g_session["quiz_name"]
         batch_index = g_session.get("active_batch_index", 0)
@@ -784,7 +802,7 @@ async def handle_group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     import time as _time
-    g_session["started_at"] = _time.time()
+    g_session["started_at"] = _time.time()   # ← test boshlangan vaqt
 
     batch_index        = g_session.get("active_batch_index", 0)
     g_session["state"] = "running"
@@ -801,11 +819,6 @@ async def handle_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if member.id == context.bot.id:
             await context.bot.send_message(
                 chat_id    = chat.id,
-                text       = (
-                    f"👋 Salom, *{chat.title}!*\n\n"
-                    f"Quiz Bot guruhga qo'shildi.\n"
-                    f"Test boshlash uchun test egasi to'plamni ulashsin."
-                ),
                 parse_mode = "Markdown",
             )
 
@@ -818,34 +831,25 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     voter_uid = answer.user.id
     owner_uid = poll_owner.get(poll_id)
 
+    log.info("POLL_ANSWER: voter=%s owner=%s poll_id=%s option_ids=%s",
+             voter_uid, owner_uid, poll_id, answer.option_ids)
+
     if owner_uid is None:
+        log.warning("owner_uid topilmadi: poll_id=%s", poll_id)
         return
 
-    # ── GURUH yoki YAKKA ekanini aniqlash ──
-    poll_chat_id  = poll_owner.get(f"{poll_id}:chat_id")
-    is_group_poll = False
-    g_session     = None
+    chat_id = user_group.get(owner_uid)
 
-    if poll_chat_id:
-        g_session = group_sessions.get(poll_chat_id)
-        # state tekshirmaymiz — /stop bosilsa ham natijani saqlaymiz
-        if g_session is not None:
-            is_group_poll = True
-        # state tekshiruvsiz: chat_id guruh sessiyasida bo'lsa guruh testi
-        elif poll_chat_id in group_results:
-            is_group_poll = True
-
-    if is_group_poll:
+    if chat_id:
         # ── GURUH TESTI ───────────────────────────────────────────────────
-        chat_id = poll_chat_id
-
         if chat_id not in group_results:
             group_results[chat_id] = {}
 
         existing = group_results[chat_id].get(voter_uid)
-        if not isinstance(existing, dict):
-            _gs        = group_sessions.get(chat_id, {})
-            started_at = _gs.get("started_at") or _time.time()
+        if existing is None or not isinstance(existing, dict):
+            # started_at — test boshlangan vaqtdan olamiz
+            g_session  = group_sessions.get(chat_id, {})
+            started_at = g_session.get("started_at") or _time.time()
             existing   = {
                 "correct":    0,
                 "wrong":      0,
@@ -855,22 +859,18 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
             group_results[chat_id][voter_uid] = existing
 
-        correct_opt  = poll_owner.get(f"{poll_id}:correct")
-        sent_at_real = poll_owner.get(f"{poll_id}:sent_at_real")  # real time.time()
+        correct_opt = poll_owner.get(f"{poll_id}:correct")
+        log.info("GURUH: correct_opt=%s, option_ids=%s", correct_opt, answer.option_ids)
 
         if answer.option_ids and correct_opt is not None:
-            existing["answered"] += 1
+            existing["answered"] = existing.get("answered", 0) + 1
             if answer.option_ids[0] == correct_opt:
-                existing["correct"] += 1
+                existing["correct"] = existing.get("correct", 0) + 1
             else:
-                existing["wrong"] += 1
+                existing["wrong"] = existing.get("wrong", 0) + 1
 
-        # Vaqt: poll yuborilgan vaqtdan javob kelguncha (real clock)
-        if sent_at_real and answer.option_ids:
-            answer_time = _time.time() - sent_at_real
-            existing["elapsed"] = existing.get("elapsed", 0.0) + answer_time
+        existing["elapsed"] = _time.time() - existing["started_at"]
 
-        # Foydalanuvchi ma'lumotini saqlash
         if voter_uid not in group_user_info:
             register_group_user(
                 uid        = voter_uid,
@@ -878,34 +878,43 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 username   = answer.user.username,
             )
 
-        # Shu poll uchun kim javob berganini belgilash (no_answer_streak uchun)
         poll_key = f"poll_answered:{poll_id}"
         if poll_key not in group_results:
             group_results[poll_key] = set()
         group_results[poll_key].add(voter_uid)
 
+        # notify_answered CHAQIRILMAYDI — guruhda vaqt tugaguncha kutish kerak
+
     else:
         # ── YAKKA TEST ────────────────────────────────────────────────────
         session = sessions.get(owner_uid)
         if session is None:
+            log.warning("SESSION topilmadi: owner_uid=%s", owner_uid)
             return
 
         stats = session.get("stats", {})
+        log.info("YAKKA: stats oldin = %s", stats)
 
         if not answer.option_ids:
+            # Vaqt tugadi yoki javob berilmadi — skipped saqlanadi (send_batch da +1 qilingan)
+            log.info("Javob berilmadi, skipped saqlanadi")
             notify_answered(owner_uid)
             return
 
+        # Javob berildi — skipped dan ayirib, correct/wrong ga qo'shamiz
         if stats.get("skipped", 0) > 0:
             stats["skipped"] -= 1
 
         correct_opt = poll_owner.get(f"{poll_id}:correct")
+        log.info("YAKKA: correct_opt=%s, option_ids=%s", correct_opt, answer.option_ids)
+
         if correct_opt is not None:
             if answer.option_ids[0] == correct_opt:
                 stats["correct"] = stats.get("correct", 0) + 1
             else:
                 stats["wrong"] = stats.get("wrong", 0) + 1
 
+        log.info("YAKKA: stats keyin = %s", stats)
         notify_answered(owner_uid)
 
 
@@ -960,6 +969,9 @@ async def handle_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         name = LANG_NAMES.get(code, code)
         session = get_session(uid)
         session["lang"] = code
+        # DB ga saqlash
+        from sessions import save_user_lang
+        await save_user_lang(uid, code)
         await query.answer(t(code, "lang_selected", name=name), show_alert=False)
         try:
             await query.edit_message_text(
