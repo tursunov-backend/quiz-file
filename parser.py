@@ -13,11 +13,15 @@ FORMAT 1 (klassik):
 
 FORMAT 2 (raqamli):
   1. Savol matni?
-  #To'g'ri javob ;
-  Noto'g'ri 1
-  Noto'g'ri 2
-  Noto'g'ri 3
-  (keyingi raqamli savol yoki fayl oxiri)
+  ====
+    # To'g'ri javob
+    ====
+    Noto'g'ri javob 1
+    ====
+    Noto'g'ri javob 2
+    ====
+    Noto'g'ri javob 3
+    ++++
 """
 import re
 import random
