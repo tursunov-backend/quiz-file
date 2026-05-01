@@ -13,7 +13,7 @@ FORMAT 1 (klassik):
 
 FORMAT 2 (raqamli):
   1. Savol matni?
-  ====
+    ====
     # To'g'ri javob
     ====
     Noto'g'ri javob 1
