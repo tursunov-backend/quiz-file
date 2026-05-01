@@ -3,7 +3,7 @@ parser.py — Fayldan savollarni o'qish
 
 Qo'llab-quvvatlanadigan formatlar:
 
-FORMAT 1 (klassik):
+FORMAT 1 (klassik - bir qatorda):
   Savol matni
   #To'g'ri javob
   ==== Noto'g'ri 1
@@ -11,17 +11,24 @@ FORMAT 1 (klassik):
   ==== Noto'g'ri 3
   ++++
 
-FORMAT 2 (raqamli):
+FORMAT 2 (yangi - ajratilgan qatorlar):
+  Savol matni?
+  ====
+  #To'g'ri javob
+  ====
+  Noto'g'ri 1
+  ====
+  Noto'g'ri 2
+  ====
+  Noto'g'ri 3
+  ++++
+
+FORMAT 3 (raqamli):
   1. Savol matni?
-    ====
-    # To'g'ri javob
-    ====
-    Noto'g'ri javob 1
-    ====
-    Noto'g'ri javob 2
-    ====
-    Noto'g'ri javob 3
-    ++++
+  #To'g'ri javob
+  Noto'g'ri 1
+  Noto'g'ri 2
+  Noto'g'ri 3
 """
 import re
 import random
@@ -38,7 +45,6 @@ _WRONG_POOL = [
     "Ularning hech biri emas",
 ]
 
-# Raqamli savol boshlanishi: "1.", "2.", "10." va h.k.
 _NUM_RE = re.compile(r"^\d+\.\s+")
 
 
@@ -58,23 +64,20 @@ def _fill_wrongs(correct: str, wrongs: list[str]) -> list[str]:
 
 
 def _build_question(question: str, correct: str, wrongs: list[str]) -> dict | None:
-    """Savol lug'atini yasaydi. Noto'g'ri bo'lsa None qaytaradi."""
     question = question.strip()
-    correct  = correct.strip().rstrip(";").strip()   # oxiridagi ';' ni olib tashlash
+    correct  = correct.strip().rstrip(";").strip()
     if not question or not correct:
         return None
 
     wrongs = [w.strip().rstrip(";").strip() for w in wrongs if w.strip()]
     wrongs = _fill_wrongs(correct, wrongs)
 
-    # Takrorlarni olib tashlash
     seen, unique = set(), []
     for opt in [correct] + wrongs:
         if opt.lower() not in seen:
             seen.add(opt.lower())
             unique.append(opt)
 
-    # Kamida 4 ta variant bo'lishi kerak
     while len(unique) < 4:
         for w in _WRONG_POOL:
             if w.lower() not in seen:
@@ -92,74 +95,101 @@ def _build_question(question: str, correct: str, wrongs: list[str]) -> dict | No
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FORMAT 1: "++++"-ga bo'lingan bloklar
+# FORMAT 1 & 2: "++++"-ga bo'lingan bloklar
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_format1(text: str) -> list[dict]:
+    """
+    Ikki xil ko'rinishni qo'llab-quvvatlaydi:
+
+    A) Bir qatorda:   "==== Javob matni"
+    B) Ajratilgan:    "====\nJavob matni" (keyingi qatorda)
+    """
     questions = []
+
     for block in text.split("++++"):
         lines = [l.strip() for l in block.splitlines() if l.strip()]
         if not lines:
             continue
 
+        # "====" ni ajratgich sifatida ishlatib bloklarni bo'lish
+        # Har bir javob: ["====", "javob matni"] yoki ["==== javob matni"]
         question_lines: list[str] = []
+        answer_blocks:  list[str] = []  # har biri bitta javob matni
+        current_answer: list[str] = []
+        in_answers = False
+
+        for line in lines:
+            if line == "====" or line.startswith("==== "):
+                # Oldingi javobni saqlash
+                if current_answer:
+                    answer_blocks.append(" ".join(current_answer))
+                current_answer = []
+                in_answers     = True
+                # Agar "==== Matn" ko'rinishida bo'lsa
+                suffix = line[4:].strip()
+                if suffix:
+                    current_answer.append(suffix)
+            else:
+                if in_answers:
+                    current_answer.append(line)
+                else:
+                    question_lines.append(line)
+
+        # Oxirgi javobni saqlash
+        if current_answer:
+            answer_blocks.append(" ".join(current_answer))
+
+        # Agar javoblar yo'q bo'lsa — #/==== formatini sinab ko'r
+        if not answer_blocks and not in_answers:
+            # Eski format: # va ==== prefikslar
+            for line in lines:
+                if line.startswith("#"):
+                    answer_blocks.insert(0, "#" + line[1:].strip())
+                elif line.startswith("===="):
+                    answer_blocks.append(line[4:].strip())
+
+        # To'g'ri javobni topish
         correct: str | None = None
         wrongs:  list[str]  = []
 
-        for line in lines:
-            if line.startswith("#"):
-                correct = line[1:].strip()
-            elif line.startswith("===="):
-                wrongs.append(line[4:].strip())
+        for ans in answer_blocks:
+            if ans.startswith("#"):
+                correct = ans[1:].strip()
             else:
-                if correct is None and not wrongs:
-                    question_lines.append(line)
+                wrongs.append(ans)
 
-        q = _build_question(" ".join(question_lines), correct or "", wrongs)
+        question = " ".join(question_lines).strip()
+        q = _build_question(question, correct or "", wrongs)
         if q:
             questions.append(q)
+
     return questions
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FORMAT 2: raqamli savollar ("1. Savol?" ... keyingi raqam)
+# FORMAT 3: raqamli savollar
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_format2(text: str) -> list[dict]:
-    """
-    Har bir savol "N. Savol matni" bilan boshlanadi.
-    To'g'ri javob "#..." bilan belgilangan.
-    Qolgan qatorlar (bo'sh bo'lmagan, raqamli savol bo'lmagan) — noto'g'ri javoblar.
-    """
+def _parse_format3(text: str) -> list[dict]:
     questions = []
-
-    # Barcha qatorlarni ol
-    lines = [l.strip() for l in text.splitlines()]
-
-    # Savol bloklar chegaralarini top
+    lines     = [l.strip() for l in text.splitlines()]
     block_starts = [i for i, l in enumerate(lines) if _NUM_RE.match(l)]
 
     for bi, start in enumerate(block_starts):
-        end = block_starts[bi + 1] if bi + 1 < len(block_starts) else len(lines)
+        end   = block_starts[bi + 1] if bi + 1 < len(block_starts) else len(lines)
         block = [l for l in lines[start:end] if l]
-
         if not block:
             continue
 
-        # Birinchi qator — savol matni (raqamni olib tashlash)
         question_text = _NUM_RE.sub("", block[0]).strip()
-
         correct: str | None = None
         wrongs:  list[str]  = []
 
         for line in block[1:]:
-            if not line:
-                continue
             if line.startswith("#"):
-                # To'g'ri javob — birinchi '#' topilgani
                 if correct is None:
                     correct = line[1:].strip()
-                # Agar yana '#' bo'lsa — noto'g'ri sifatida qo'sh
                 else:
                     wrongs.append(line[1:].strip())
             elif line.startswith("===="):
@@ -175,31 +205,24 @@ def _parse_format2(text: str) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ASOSIY PARSER — formatni avtomatik aniqlab, tegishli metodga yo'naltiradi
+# ASOSIY PARSER
 # ─────────────────────────────────────────────────────────────────────────────
 
 def parse_blocks(text: str) -> list[dict]:
-    """
-    Matnni tahlil qilib, savollar ro'yxatini qaytaradi.
-    Format 1 ("++++") va Format 2 (raqamli) ni avtomatik tanlaydi.
-    Agar ikki format aralashgan bo'lsa — har biri alohida parsed qilinadi.
-    """
-    has_format1 = "++++" in text
-    has_format2 = bool(_NUM_RE.search(text))
+    has_format12 = "++++" in text
+    has_format3  = bool(_NUM_RE.search(text))
 
-    if has_format1 and not has_format2:
+    if has_format12 and not has_format3:
         return _parse_format1(text)
 
-    if has_format2 and not has_format1:
-        return _parse_format2(text)
+    if has_format3 and not has_format12:
+        return _parse_format3(text)
 
-    if has_format1 and has_format2:
-        # Aralash: har ikkisini sinab ko'r, ko'prog'ini ol
+    if has_format12 and has_format3:
         r1 = _parse_format1(text)
-        r2 = _parse_format2(text)
-        return r1 if len(r1) >= len(r2) else r2
+        r3 = _parse_format3(text)
+        return r1 if len(r1) >= len(r3) else r3
 
-    # Hech biri aniqlanmasa — format1 sifatida urinib ko'r
     return _parse_format1(text)
 
 
@@ -235,4 +258,3 @@ def read_file(path: str, mime: str) -> str:
             continue
 
     return ""
-
