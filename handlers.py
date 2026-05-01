@@ -6,22 +6,24 @@ import logging
 import tempfile
 from pathlib import Path
 
-from telegram import Update, ReplyKeyboardRemove
+from telegram import Update
 from telegram.ext import ContextTypes
 
 from keyboards import (
     main_menu_kb, batch_size_kb, time_kb,
     batch_card_kb, group_ready_kb, result_kb, lang_kb,
+    quiz_list_kb, quiz_batches_kb,
 )
 from parser import read_file, parse_blocks
 from sessions import (
-    sessions, poll_owner,
+    sessions, poll_owner, active_poll,
     get_session, reset_session, new_quiz_session,
     build_result_text, build_batches, _empty_stats,
     group_sessions, group_ready_users, user_group,
     group_user_info, group_results,
-    register_group_user, save_group_result,
-    clear_group_results,
+    register_group_user, save_group_result, clear_group_results,
+    save_quiz, get_user_quizzes, load_quiz_to_session,
+    save_solo_result, get_elapsed, build_group_result_text,
 )
 from quiz_runner import start_quiz, cancel_quiz_task, notify_answered
 from i18n import t
@@ -37,10 +39,13 @@ def _get_chat_id(update: Update) -> int | None:
     return None
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# BUYRUQLAR
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid  = update.effective_user.id
-    from sessions import load_user_lang
-    lang = await load_user_lang(uid)
+    lang = get_session(uid).get("lang", "uz")
 
     if context.args:
         param = context.args[0]
@@ -112,34 +117,90 @@ async def cmd_newquiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_myquiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid     = update.effective_user.id
     session = get_session(uid)
-    batches = session.get("batches", [])
-    message = update.message or update.callback_query.message
     lang    = session.get("lang", "uz")
+    message = (
+        update.message
+        or (update.callback_query.message if update.callback_query else None)
+    )
+    chat_id = update.effective_chat.id if update.effective_chat else uid
 
-    if not batches:
-        await message.reply_text(
-            t(lang, "no_quiz"),
-            reply_markup=main_menu_kb(lang),
+    quizzes = get_user_quizzes(uid)
+    if not quizzes:
+        text = t(lang, "no_quiz")
+        kb   = main_menu_kb(lang)
+        if message:
+            await message.reply_text(text, reply_markup=kb)
+        else:
+            await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=kb)
+        return
+
+    lines = []
+    for i, q in enumerate(quizzes, 1):
+        name      = q["quiz_name"] or f"Test {i}"
+        total     = q.get("total", 0)
+        batches_n = len(q.get("batches", []))
+        open_time = q.get("open_time")
+        time_lbl  = f"{open_time} soniya" if open_time else "Vaqtsiz"
+        lines.append(
+            f"*{i}. {name}*\n"
+            f"   ✏️ {total} ta savol  ·  📦 {batches_n} ta to'plam  ·  ⏱ {time_lbl}"
         )
+
+    text = f"📋 *Sizning testlaringiz* ({len(quizzes)} ta):\n\n" + "\n\n".join(lines)
+    kb   = quiz_list_kb(quizzes, lang)
+
+    if message:
+        try:
+            await message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+        except Exception:
+            await message.reply_text(text, reply_markup=kb)
     else:
-        name  = session.get("quiz_name", "—")
-        total = sum(len(b) for b in batches)
-        await message.reply_text(
-            t(lang, "quiz_info", name=name, total=total, batches=len(batches)),
-            parse_mode   = "Markdown",
-            reply_markup = main_menu_kb(lang),
-        )
+        await context.bot.send_message(chat_id=chat_id, text=text,
+                                       parse_mode="Markdown", reply_markup=kb)
+
+
+async def handle_select_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    uid        = update.effective_user.id
+    quiz_index = int(query.data.split(":")[1])
+    session    = get_session(uid)
+    lang       = session.get("lang", "uz")
+
+    ok = load_quiz_to_session(uid, quiz_index)
+    if not ok:
+        await query.answer("⚠️ Test topilmadi!", show_alert=True)
+        return
+
+    session   = get_session(uid)
+    quiz_name = session.get("quiz_name", "Quiz")
+    batches   = session.get("batches", [])
+    open_time = session.get("open_time")
+    total     = sum(len(b) for b in batches)
+    time_lbl  = f"{open_time} soniya" if open_time else "Vaqtsiz"
+
+    lines = [f"📦 *{i+1}-to'plam* — {len(b)} ta savol" for i, b in enumerate(batches)]
+    text  = (
+        f"📋 *\"{quiz_name}\"*\n\n"
+        f"✏️ {total} ta savol  ·  📦 {len(batches)} ta to'plam  ·  ⏱ {time_lbl}\n\n"
+        + "\n".join(lines)
+        + "\n\nQaysi to'plamni boshlaysiz?"
+    )
+    kb = quiz_batches_kb(uid, quiz_index, batches, open_time, lang)
+    try:
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception:
+        chat_id = update.effective_chat.id if update.effective_chat else uid
+        await context.bot.send_message(chat_id=chat_id, text=text,
+                                       parse_mode="Markdown", reply_markup=kb)
 
 
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid      = update.effective_user.id
     chat_id  = update.effective_chat.id
     is_group = update.effective_chat.type in ("group", "supergroup")
-    lang     = get_session(uid).get("lang", "uz")
 
     if is_group:
-        from sessions import build_group_result_text
-        from keyboards import group_result_kb
         g_session = group_sessions.get(chat_id)
         if not g_session:
             await update.message.reply_text("⚠️ Hozir aktiv guruh testi yo'q.")
@@ -148,14 +209,25 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         owner_uid       = g_session.get("owner_uid", uid)
         quiz_name       = g_session.get("quiz_name", "")
         total_questions = len(g_session.get("questions", []))
+        batch_index     = g_session.get("active_batch_index", 0)
 
         await cancel_quiz_task(owner_uid, context)
 
-        text = build_group_result_text(
-            chat_id         = chat_id,
-            quiz_name       = quiz_name,
-            total_questions = total_questions,
-        )
+        text = build_group_result_text(chat_id, quiz_name, total_questions)
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup, SwitchInlineQueryChosenChat
+        share_kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                "📤 Testni ulashish",
+                switch_inline_query_chosen_chat=SwitchInlineQueryChosenChat(
+                    query=f"share:{owner_uid}:{batch_index}",
+                    allow_user_chats=True,
+                    allow_bot_chats=False,
+                    allow_group_chats=True,
+                    allow_channel_chats=True,
+                )
+            )
+        ]])
 
         clear_group_results(chat_id)
         group_sessions.pop(chat_id, None)
@@ -164,33 +236,25 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 del user_group[u]
 
         try:
-            await update.message.reply_text(
-                text,
-                parse_mode   = "Markdown",
-                reply_markup = group_result_kb(),
-            )
+            await update.message.reply_text(text, parse_mode="Markdown", reply_markup=share_kb)
         except Exception:
-            await update.message.reply_text(
-                text,
-                reply_markup = group_result_kb(),
-            )
+            await update.message.reply_text(text, reply_markup=share_kb)
         return
 
-    # Yakka test
+    # ── Yakka test ─────────────────────────────────────────────────────────
     session = get_session(uid)
+    lang    = session.get("lang", "uz")
+
     if session.get("state") == "idle":
         await update.message.reply_text(t(lang, "no_active"), reply_markup=main_menu_kb(lang))
         return
-
-    from sessions import save_solo_result, get_elapsed
 
     quiz_name   = session.get("quiz_name", "")
     batch_index = session.get("active_batch_index", 0)
     open_time   = session.get("open_time")
     time_label  = f"{open_time} soniya" if open_time else "Vaqtsiz"
 
-    stats   = session.get("stats", {})
-    correct = stats.get("correct", 0)
+    correct = session.get("stats", {}).get("correct", 0)
     elapsed = get_elapsed(uid)
     save_solo_result(uid, correct, elapsed)
 
@@ -213,24 +277,18 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    uid  = update.effective_user.id
+    lang = get_session(uid).get("lang", "uz")
     await update.message.reply_text(
-        "📖 *Yordam*\n\n"
-        "/newquiz — Yangi test yaratish\n"
-        "/myquiz — Joriy test holati\n"
-        "/stop — Testni to'xtatish\n\n"
-        "📌 *Fayl formati:*\n"
-        "```\nSavol?\n#To'g'ri javob\n==== Noto'g'ri 1\n==== Noto'g'ri 2\n==== Noto'g'ri 3\n++++\n```",
+        t(lang, "help_text"),
         parse_mode   = "Markdown",
-        reply_markup = main_menu_kb(),
+        reply_markup = main_menu_kb(lang),
     )
 
 
-async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text
-    if   text == "📝 Yangi test tuzish":   await cmd_newquiz(update, context)
-    elif text == "📋 Testlarimni ko'rish": await cmd_myquiz(update, context)
-    elif text == "🌐 Til: O'zbek":         await cmd_help(update, context)
-
+# ══════════════════════════════════════════════════════════════════════════════
+# MATN
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid     = update.effective_user.id
@@ -249,12 +307,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(t(lang, "new_quiz"), reply_markup=main_menu_kb(lang))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# FAYL
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid     = update.effective_user.id
     session = get_session(uid)
+    lang    = session.get("lang", "uz")
 
     if session.get("state") != "waiting_file":
-        lang = get_session(uid).get("lang", "uz")
         await update.message.reply_text(t(lang, "start_first"))
         return
 
@@ -266,11 +328,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     mime   = doc.mime_type or ""
     suffix = Path(doc.file_name or "file.txt").suffix.lower()
     if suffix not in (".txt", ".pdf", ".docx") and "pdf" not in mime and "word" not in mime:
-        await update.message.reply_text(t(session.get("lang", "uz"), "only_file"))
+        await update.message.reply_text(t(lang, "only_file"))
         return
 
-    lang = session.get("lang", "uz")
-    msg  = await update.message.reply_text(t(lang, "reading"))
+    msg = await update.message.reply_text(t(lang, "reading"))
 
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tg_file = await doc.get_file()
@@ -288,24 +349,23 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         os.unlink(tmp_path)
 
     if not questions:
-        await msg.edit_text(
-            "⚠️ Fayldan savol topilmadi. Fayl formatini tekshiring.\n\n"
-            "```\nSavol?\n#To'g'ri javob\n==== Noto'g'ri 1\n==== Noto'g'ri 2\n==== Noto'g'ri 3\n++++\n```",
-            parse_mode="Markdown",
-        )
+        await msg.edit_text(t(lang, "not_found"), parse_mode="Markdown")
         return
 
     session["questions"]   = questions
     session["batch_start"] = 0
     session["state"]       = "waiting_batch_size"
-    total = len(questions)
 
     await msg.edit_text(
-        t(lang, "found", total=total),
+        t(lang, "found", total=len(questions)),
         parse_mode   = "Markdown",
         reply_markup = batch_size_kb(),
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK: batch size
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_batch_size(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -332,6 +392,10 @@ async def handle_batch_size(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK: vaqt tanlash
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -352,17 +416,15 @@ async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session["state"]     = "ready"
 
     batches   = build_batches(uid)
+    save_quiz(uid, session)
     quiz_name = session.get("quiz_name", "Quiz")
     time_text = f"{seconds} soniya" if seconds > 0 else "Vaqtsiz"
     total     = sum(len(b) for b in batches)
     lang      = session.get("lang", "uz")
 
-    # DB ga saqlash
-    from sessions import save_quiz_db
-    await save_quiz_db(uid)
-
     await query.edit_message_text(
-        t(lang, "batches_ready", time=time_text, name=quiz_name, total=total, batches=len(batches)),
+        t(lang, "batches_ready", time=time_text, name=quiz_name,
+          total=total, batches=len(batches)),
         parse_mode="Markdown",
     )
 
@@ -371,23 +433,22 @@ async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
         end = start + len(batch)
         await context.bot.send_message(
             chat_id      = chat_id,
-            text         = t(lang, "batch_card", n=i+1, start=start+1, end=end, count=len(batch), time=time_text),
+            text         = t(lang, "batch_card", n=i+1, start=start+1,
+                             end=end, count=len(batch), time=time_text),
             parse_mode   = "Markdown",
             reply_markup = batch_card_kb(uid, i),
         )
         start = end
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK: to'plamni boshlash (inline yoki oddiy)
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def handle_start_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     uid = update.effective_user.id
-
-    log.info(
-        "handle_start_batch | uid=%s | data=%s | inline_msg=%s | msg_chat=%s",
-        uid, query.data, query.inline_message_id,
-        query.message.chat_id if query.message else None,
-    )
 
     is_inline = query.inline_message_id is not None and query.message is None
     chat_id   = query.message.chat_id if query.message else None
@@ -438,10 +499,7 @@ async def handle_start_batch(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if is_inline or chat_id is None:
         try:
             await context.bot.send_message(
-                chat_id      = uid,
-                text         = text,
-                parse_mode   = "Markdown",
-                reply_markup = kb,
+                chat_id=uid, text=text, parse_mode="Markdown", reply_markup=kb,
             )
         except Exception as exc:
             log.error("Private chat ga yuborishda xato (uid=%s): %s", uid, exc)
@@ -451,8 +509,7 @@ async def handle_start_batch(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
         except Exception:
             await context.bot.send_message(
-                chat_id=chat_id, text=text,
-                parse_mode="Markdown", reply_markup=kb,
+                chat_id=chat_id, text=text, parse_mode="Markdown", reply_markup=kb,
             )
 
 
@@ -506,7 +563,7 @@ async def handle_confirm_batch(update: Update, context: ContextTypes.DEFAULT_TYP
 
     batch_index = int(query.data.split(":")[1])
 
-    if session.get("state") not in ("waiting_ready",):
+    if session.get("state") != "waiting_ready":
         await query.answer("⚠️ Avval to'plamni tanlang!", show_alert=True)
         return
 
@@ -546,79 +603,16 @@ async def handle_retry_batch(update: Update, context: ContextTypes.DEFAULT_TYPE)
     lang       = session.get("lang", "uz")
 
     await query.edit_message_text(
-        t(lang, "retry_title", name=quiz_name, n=batch_index+1, total=total, time=time_label),
+        t(lang, "retry_title", name=quiz_name, n=batch_index+1,
+          total=total, time=time_label),
         parse_mode   = "Markdown",
         reply_markup = _confirm_start_kb(batch_index, lang),
     )
 
 
-async def handle_resume_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    uid     = update.effective_user.id
-    session = get_session(uid)
-    chat_id = query.message.chat_id if query.message else uid
-
-    parts       = query.data.split(":")
-    batch_index = int(parts[1])
-    start_idx   = int(parts[2]) if len(parts) > 2 else 0
-
-    log.info("RESUME: batch_index=%s start_idx=%s", batch_index, start_idx)
-
-    session["state"] = "running"
-
-    try:
-        await query.edit_message_text("▶️ Test davom ettirilmoqda...")
-    except Exception:
-        pass
-
-    await start_quiz(
-        chat_id, uid, session, context,
-        batch_index=batch_index,
-        is_group=False,
-        start_idx=start_idx,
-    )
-
-
-async def handle_stop_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    uid     = update.effective_user.id
-    session = get_session(uid)
-    chat_id = query.message.chat_id if query.message else uid
-
-    parts       = query.data.split(":")
-    batch_index = int(parts[1])
-
-    quiz_name  = session.get("quiz_name", "")
-    open_time  = session.get("open_time")
-    time_label = f"{open_time} soniya" if open_time else "Vaqtsiz"
-
-    from sessions import save_solo_result, get_elapsed
-
-    correct = session.get("stats", {}).get("correct", 0)
-    elapsed = get_elapsed(uid)
-    save_solo_result(uid, correct, elapsed)
-
-    text = build_result_text(uid)
-    session["state"] = "idle"
-    await cancel_quiz_task(uid, context)
-
-    try:
-        await query.edit_message_text(
-            text,
-            parse_mode   = "Markdown",
-            reply_markup = result_kb(uid, quiz_name, 0, time_label, batch_index),
-        )
-    except Exception:
-        await context.bot.send_message(
-            chat_id      = chat_id,
-            text         = text,
-            parse_mode   = "Markdown",
-            reply_markup = result_kb(uid, quiz_name, 0, time_label, batch_index),
-        )
-    reset_session(uid)
-
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK: statistika
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -634,20 +628,21 @@ async def handle_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     wrong   = stats.get("wrong", 0)
     skipped = stats.get("skipped", 0)
     pct     = round(correct / total * 100)
-
     await query.answer(
         f"✅ To'g'ri: {correct}/{total} ({pct}%)\n❌ Xato: {wrong}\n⏭ O'tkazildi: {skipped}",
         show_alert=True,
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# INLINE QUERY
+# ══════════════════════════════════════════════════════════════════════════════
+
 async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     from telegram import InlineQueryResultArticle, InputTextMessageContent
     import uuid
 
-    query = update.inline_query
-    log.info("INLINE QUERY keldi: uid=%s, query=%s", query.from_user.id, query.query)
-
+    query   = update.inline_query
     uid     = query.from_user.id
     session = get_session(uid)
     batches = session.get("batches", [])
@@ -670,9 +665,8 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
     time_label = f"{open_time} soniya" if open_time else "Vaqtsiz"
     batch      = batches[batch_index]
     total      = len(batch)
-
-    start = sum(len(batches[i]) for i in range(batch_index))
-    end   = start + total
+    start      = sum(len(batches[i]) for i in range(batch_index))
+    end        = start + total
 
     share_text = (
         f"📋 *\"{quiz_name}\" — {batch_index+1}-to'plam*\n"
@@ -684,14 +678,16 @@ async def handle_inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE
         title       = f'📋 "{quiz_name}" — {batch_index+1}-to\'plam',
         description = f"✏️ {start+1}–{end} savollar ({total} ta)  ·  🕐 {time_label}",
         input_message_content=InputTextMessageContent(
-            message_text = share_text,
-            parse_mode   = "Markdown",
+            message_text=share_text, parse_mode="Markdown",
         ),
-        reply_markup = batch_card_kb(uid, batch_index),
+        reply_markup=batch_card_kb(uid, batch_index),
     )
-
     await query.answer([result], cache_time=0, is_personal=True)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GURUH HANDLERLAR
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = _get_chat_id(update)
@@ -703,8 +699,8 @@ async def handle_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if context.args:
         try:
-            parts       = context.args[0].split("_")
-            owner_uid   = int(parts[0])
+            parts     = context.args[0].split("_")
+            owner_uid = int(parts[0])
             if len(parts) > 1:
                 batch_index = int(parts[1])
         except (ValueError, IndexError):
@@ -716,7 +712,9 @@ async def handle_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session = get_session(owner_uid)
     batches = session.get("batches", [])
     if not batches or batch_index >= len(batches):
-        await update.message.reply_text("⚠️ Test topilmadi. Avval bot bilan private chatda test yarating.")
+        await update.message.reply_text(
+            "⚠️ Test topilmadi. Avval bot bilan private chatda test yarating."
+        )
         return
 
     batch      = batches[batch_index]
@@ -743,7 +741,6 @@ async def handle_group_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     clear_group_results(chat_id)
 
     start_offset = sum(len(batches[i]) for i in range(batch_index))
-
     await update.message.reply_text(
         f"♟ *\"{quiz_name}\" — {batch_index+1}-to'plam*\n\n"
         f"✏️ {start_offset+1}–{start_offset+total} savollar ({total} ta)\n"
@@ -802,15 +799,15 @@ async def handle_group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     import time as _time
-    g_session["started_at"] = _time.time()   # ← test boshlangan vaqt
-
-    batch_index        = g_session.get("active_batch_index", 0)
-    g_session["state"] = "running"
-    owner_uid          = g_session["owner_uid"]
-    lang               = get_session(owner_uid).get("lang", "uz")
+    g_session["started_at"] = _time.time()
+    g_session["state"]      = "running"
+    owner_uid               = g_session["owner_uid"]
+    batch_index             = g_session.get("active_batch_index", 0)
+    lang                    = get_session(owner_uid).get("lang", "uz")
 
     await query.edit_message_text(t(lang, "starting"))
-    await start_quiz(chat_id, owner_uid, g_session, context, batch_index=batch_index, is_group=True)
+    await start_quiz(chat_id, owner_uid, g_session, context,
+                     batch_index=batch_index, is_group=True)
 
 
 async def handle_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -819,23 +816,26 @@ async def handle_bot_added(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if member.id == context.bot.id:
             await context.bot.send_message(
                 chat_id    = chat.id,
+                text       = (
+                    f"👋 Salom, *{chat.title}!*\n\n"
+                    f"Quiz Bot guruhga qo'shildi.\n"
+                    f"Test boshlash uchun test egasi to'plamni ulashsin."
+                ),
                 parse_mode = "Markdown",
             )
 
 
-async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    import time as _time
+# ══════════════════════════════════════════════════════════════════════════════
+# POLL JAVOBLARI
+# ══════════════════════════════════════════════════════════════════════════════
 
+async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     answer    = update.poll_answer
     poll_id   = answer.poll_id
     voter_uid = answer.user.id
     owner_uid = poll_owner.get(poll_id)
 
-    log.info("POLL_ANSWER: voter=%s owner=%s poll_id=%s option_ids=%s",
-             voter_uid, owner_uid, poll_id, answer.option_ids)
-
     if owner_uid is None:
-        log.warning("owner_uid topilmadi: poll_id=%s", poll_id)
         return
 
     chat_id = user_group.get(owner_uid)
@@ -845,31 +845,32 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if chat_id not in group_results:
             group_results[chat_id] = {}
 
-        existing = group_results[chat_id].get(voter_uid)
-        if existing is None or not isinstance(existing, dict):
-            # started_at — test boshlangan vaqtdan olamiz
-            g_session  = group_sessions.get(chat_id, {})
-            started_at = g_session.get("started_at") or _time.time()
-            existing   = {
-                "correct":    0,
-                "wrong":      0,
-                "answered":   0,
-                "elapsed":    0.0,
-                "started_at": started_at,
-            }
-            group_results[chat_id][voter_uid] = existing
+        existing = group_results[chat_id].get(voter_uid, {})
+        voter_stats = {
+            "correct":    existing.get("correct", 0),
+            "wrong":      existing.get("wrong", 0),
+            "answered":   existing.get("answered", 0),
+            "elapsed":    existing.get("elapsed", 0.0),
+            "started_at": existing.get("started_at"),
+        }
+
+        if voter_stats["started_at"] is None:
+            import time as _time
+            g_session = group_sessions.get(chat_id, {})
+            voter_stats["started_at"] = g_session.get("started_at") or _time.time()
 
         correct_opt = poll_owner.get(f"{poll_id}:correct")
-        log.info("GURUH: correct_opt=%s, option_ids=%s", correct_opt, answer.option_ids)
-
         if answer.option_ids and correct_opt is not None:
-            existing["answered"] = existing.get("answered", 0) + 1
             if answer.option_ids[0] == correct_opt:
-                existing["correct"] = existing.get("correct", 0) + 1
+                voter_stats["correct"] += 1
             else:
-                existing["wrong"] = existing.get("wrong", 0) + 1
+                voter_stats["wrong"] += 1
+        voter_stats["answered"] += 1
 
-        existing["elapsed"] = _time.time() - existing["started_at"]
+        import time as _time
+        voter_stats["elapsed"] = _time.time() - voter_stats["started_at"]
+
+        group_results[chat_id][voter_uid] = voter_stats
 
         if voter_uid not in group_user_info:
             register_group_user(
@@ -878,62 +879,52 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 username   = answer.user.username,
             )
 
-        poll_key = f"poll_answered:{poll_id}"
-        if poll_key not in group_results:
-            group_results[poll_key] = set()
-        group_results[poll_key].add(voter_uid)
-
-        # notify_answered CHAQIRILMAYDI — guruhda vaqt tugaguncha kutish kerak
+        # Guruhda vaqt tugaguncha kutish — notify_answered chaqirilmaydi
 
     else:
         # ── YAKKA TEST ────────────────────────────────────────────────────
         session = sessions.get(owner_uid)
         if session is None:
-            log.warning("SESSION topilmadi: owner_uid=%s", owner_uid)
             return
 
         stats = session.get("stats", {})
-        log.info("YAKKA: stats oldin = %s", stats)
-
-        if not answer.option_ids:
-            # Vaqt tugadi yoki javob berilmadi — skipped saqlanadi (send_batch da +1 qilingan)
-            log.info("Javob berilmadi, skipped saqlanadi")
-            notify_answered(owner_uid)
-            return
-
-        # Javob berildi — skipped dan ayirib, correct/wrong ga qo'shamiz
         if stats.get("skipped", 0) > 0:
             stats["skipped"] -= 1
 
-        correct_opt = poll_owner.get(f"{poll_id}:correct")
-        log.info("YAKKA: correct_opt=%s, option_ids=%s", correct_opt, answer.option_ids)
+        if not answer.option_ids:
+            stats["skipped"] = stats.get("skipped", 0) + 1
+            notify_answered(owner_uid)
+            return
 
+        correct_opt = poll_owner.get(f"{poll_id}:correct")
         if correct_opt is not None:
             if answer.option_ids[0] == correct_opt:
                 stats["correct"] = stats.get("correct", 0) + 1
             else:
                 stats["wrong"] = stats.get("wrong", 0) + 1
 
-        log.info("YAKKA: stats keyin = %s", stats)
         notify_answered(owner_uid)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK: til tanlash + menyu
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query   = update.callback_query
     uid     = update.effective_user.id
-
     chat_id = _get_chat_id(update)
     if chat_id is None:
         await query.answer("⚠️ Chat aniqlanmadi!", show_alert=True)
         return
 
     LANG_NAMES = {
-        "uz": "O'zbek",       "ar": "العربية",          "ca": "Català",
-        "nl": "Nederlands",   "en": "English",           "fr": "Français",
-        "de": "Deutsch",      "id": "Bahasa Indonesia",  "it": "Italiano",
-        "ko": "한국어",        "ms": "Bahasa Melayu",     "fa": "فارسی",
-        "pl": "Polski",       "pt": "Português (Brasil)", "ru": "Русский",
-        "es": "Español",      "tr": "Türkçe",            "uk": "Українська",
+        "uz": "O'zbek",        "ar": "العربية",           "ca": "Català",
+        "nl": "Nederlands",    "en": "English",            "fr": "Français",
+        "de": "Deutsch",       "id": "Bahasa Indonesia",   "it": "Italiano",
+        "ko": "한국어",         "ms": "Bahasa Melayu",      "fa": "فارسی",
+        "pl": "Polski",        "pt": "Português (Brasil)", "ru": "Русский",
+        "es": "Español",       "tr": "Türkçe",             "uk": "Українська",
     }
 
     if query.data == "newquiz":
@@ -965,13 +956,10 @@ async def handle_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     if query.data.startswith("lang:"):
-        code = query.data.split(":")[1]
-        name = LANG_NAMES.get(code, code)
+        code    = query.data.split(":")[1]
+        name    = LANG_NAMES.get(code, code)
         session = get_session(uid)
         session["lang"] = code
-        # DB ga saqlash
-        from sessions import save_user_lang
-        await save_user_lang(uid, code)
         await query.answer(t(code, "lang_selected", name=name), show_alert=False)
         try:
             await query.edit_message_text(
@@ -983,10 +971,20 @@ async def handle_lang(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             pass
         return
 
+    if query.data.startswith("selectquiz:"):
+        await handle_select_quiz(update, context)
+        return
+
     await query.answer()
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FALLBACK
+# ══════════════════════════════════════════════════════════════════════════════
 
 async def handle_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid  = update.effective_user.id
     lang = get_session(uid).get("lang", "uz")
-    await update.message.reply_text(t(lang, "new_quiz"), reply_markup=main_menu_kb(lang))
+    await update.message.reply_text(
+        t(lang, "new_quiz"), reply_markup=main_menu_kb(lang)
+    )

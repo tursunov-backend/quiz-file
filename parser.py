@@ -30,6 +30,7 @@ FORMAT 3 (raqamli):
   Noto'g'ri 2
   Noto'g'ri 3
 """
+
 import re
 import random
 from pathlib import Path
