@@ -116,3 +116,26 @@ def lang_kb() -> InlineKeyboardMarkup:
         ]
         rows.append(row)
     return InlineKeyboardMarkup(rows)
+
+def quiz_list_kb(quizzes: list, lang: str = "uz") -> InlineKeyboardMarkup:
+    rows = []
+    for i, q in enumerate(quizzes):
+        name = q.get("quiz_name") or f"Test {i+1}"
+        rows.append([
+            InlineKeyboardButton(f"📋 {name}", callback_data=f"selectquiz:{i}")
+        ])
+    return InlineKeyboardMarkup(rows)
+
+
+def quiz_batches_kb(uid: int, quiz_index: int, batches: list,
+                    open_time=None, lang: str = "uz") -> InlineKeyboardMarkup:
+    rows = []
+    time_lbl = f"{open_time} soniya" if open_time else "Vaqtsiz"
+    for i, batch in enumerate(batches):
+        rows.append([
+            InlineKeyboardButton(
+                f"📦 {i+1}-to'plam — {len(batch)} ta savol",
+                callback_data=f"startbatch:{i}:{uid}"
+            )
+        ])
+    return InlineKeyboardMarkup(rows)

@@ -1,11 +1,11 @@
 """
-parser.py — Fayldan savollarni o'qish
+parser.py — Fayldan savollarni o'qish  (tuzatilgan versiya)
 
 Qo'llab-quvvatlanadigan formatlar:
 
 FORMAT 1 (klassik - bir qatorda):
   Savol matni
-  #To'g'ri javob
+  # To'g'ri javob          ← hash + bo'shliq
   ==== Noto'g'ri 1
   ==== Noto'g'ri 2
   ==== Noto'g'ri 3
@@ -14,13 +14,11 @@ FORMAT 1 (klassik - bir qatorda):
 FORMAT 2 (yangi - ajratilgan qatorlar):
   Savol matni?
   ====
-  #To'g'ri javob
+  #To'g'ri javob           ← hash, bo'shliqsiz
   ====
   Noto'g'ri 1
   ====
   Noto'g'ri 2
-  ====
-  Noto'g'ri 3
   ++++
 
 FORMAT 3 (raqamli):
@@ -28,7 +26,6 @@ FORMAT 3 (raqamli):
   #To'g'ri javob
   Noto'g'ri 1
   Noto'g'ri 2
-  Noto'g'ri 3
 """
 
 import re
@@ -46,7 +43,7 @@ _WRONG_POOL = [
     "Ularning hech biri emas",
 ]
 
-_NUM_RE = re.compile(r"^\d+\.\s+")
+_NUM_RE = re.compile(r"^\d+[\.\)]\s+")
 
 
 def _fill_wrongs(correct: str, wrongs: list[str]) -> list[str]:
@@ -101,10 +98,9 @@ def _build_question(question: str, correct: str, wrongs: list[str]) -> dict | No
 
 def _parse_format1(text: str) -> list[dict]:
     """
-    Ikki xil ko'rinishni qo'llab-quvvatlaydi:
-
-    A) Bir qatorda:   "==== Javob matni"
-    B) Ajratilgan:    "====\nJavob matni" (keyingi qatorda)
+    Ikkala ko'rinishni qo'llab-quvvatlaydi:
+      A) "# To'g'ri javob"  va  "==== Noto'g'ri"   (bir qatorda)
+      B) "====\n#To'g'ri"   va  "====\nNoto'g'ri"  (ajratilgan qatorlar)
     """
     questions = []
 
@@ -113,24 +109,29 @@ def _parse_format1(text: str) -> list[dict]:
         if not lines:
             continue
 
-        # "====" ni ajratgich sifatida ishlatib bloklarni bo'lish
-        # Har bir javob: ["====", "javob matni"] yoki ["==== javob matni"]
         question_lines: list[str] = []
-        answer_blocks:  list[str] = []  # har biri bitta javob matni
+        answer_blocks:  list[str] = []
         current_answer: list[str] = []
         in_answers = False
 
         for line in lines:
-            if line == "====" or line.startswith("==== "):
+            if line.startswith("===="):  # "====", "==== Matn", "====Matn"
                 # Oldingi javobni saqlash
                 if current_answer:
                     answer_blocks.append(" ".join(current_answer))
                 current_answer = []
                 in_answers     = True
-                # Agar "==== Matn" ko'rinishida bo'lsa
                 suffix = line[4:].strip()
                 if suffix:
                     current_answer.append(suffix)
+
+            # ★ TUZATISH: "# To'g'ri javob" ham javob sifatida qaraladi
+            elif line.startswith("#"):
+                if current_answer:
+                    answer_blocks.append(" ".join(current_answer))
+                current_answer = [line]   # "#..." ni saqlaymiz
+                in_answers     = True
+
             else:
                 if in_answers:
                     current_answer.append(line)
@@ -141,22 +142,16 @@ def _parse_format1(text: str) -> list[dict]:
         if current_answer:
             answer_blocks.append(" ".join(current_answer))
 
-        # Agar javoblar yo'q bo'lsa — #/==== formatini sinab ko'r
-        if not answer_blocks and not in_answers:
-            # Eski format: # va ==== prefikslar
-            for line in lines:
-                if line.startswith("#"):
-                    answer_blocks.insert(0, "#" + line[1:].strip())
-                elif line.startswith("===="):
-                    answer_blocks.append(line[4:].strip())
-
         # To'g'ri javobni topish
         correct: str | None = None
         wrongs:  list[str]  = []
 
         for ans in answer_blocks:
             if ans.startswith("#"):
-                correct = ans[1:].strip()
+                if correct is None:          # birinchi # — to'g'ri javob
+                    correct = ans[1:].strip()
+                else:
+                    wrongs.append(ans[1:].strip())
             else:
                 wrongs.append(ans)
 
@@ -190,13 +185,13 @@ def _parse_format3(text: str) -> list[dict]:
         for line in block[1:]:
             if line.startswith("#"):
                 if correct is None:
-                    correct = line[1:].strip()
+                    correct = line[1:].strip().rstrip(";").strip()
                 else:
-                    wrongs.append(line[1:].strip())
+                    wrongs.append(line[1:].strip().rstrip(";").strip())
             elif line.startswith("===="):
                 wrongs.append(line[4:].strip())
             else:
-                wrongs.append(line)
+                wrongs.append(line.rstrip(";").strip())
 
         q = _build_question(question_text, correct or "", wrongs)
         if q:
@@ -231,16 +226,28 @@ def parse_blocks(text: str) -> list[dict]:
 # FAYL O'QISH
 # ─────────────────────────────────────────────────────────────────────────────
 
-def read_file(path: str, mime: str) -> str:
+def read_file(path: str, mime: str = "") -> str:
     suffix = Path(path).suffix.lower()
 
     if suffix == ".pdf" or "pdf" in mime:
+        # PyMuPDF (fitz) — birinchi urinish
         try:
             import fitz
             doc  = fitz.open(path)
             text = "\n".join(page.get_text() for page in doc)
             doc.close()
-            return text
+            if text.strip():
+                return text
+        except ImportError:
+            pass
+
+        # pdfplumber — ikkinchi urinish
+        try:
+            import pdfplumber
+            with pdfplumber.open(path) as pdf:
+                text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+            if text.strip():
+                return text
         except ImportError:
             pass
 

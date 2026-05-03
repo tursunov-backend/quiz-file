@@ -370,3 +370,38 @@ def build_group_result_text(chat_id: int, quiz_name: str, total_questions: int) 
 
 def clear_group_results(chat_id: int) -> None:
     group_results.pop(chat_id, None)
+
+# ── Quiz saqlash / yuklash ──────────────────────────────────────────────────
+
+_user_quizzes: dict[int, list[dict]] = {}
+
+def save_quiz_db(uid: int, session: dict) -> None:
+    """Sessiyadan quizni foydalanuvchi ro'yxatiga saqlaydi."""
+    quiz = {
+        "quiz_name": session.get("quiz_name", "Test"),
+        "batches":   session.get("batches", []),
+        "open_time": session.get("open_time"),
+        "total":     sum(len(b) for b in session.get("batches", [])),
+    }
+    if uid not in _user_quizzes:
+        _user_quizzes[uid] = []
+    _user_quizzes[uid].append(quiz)
+
+
+def get_user_quizzes(uid: int) -> list[dict]:
+    """Foydalanuvchining saqlangan quizlar ro'yxatini qaytaradi."""
+    return _user_quizzes.get(uid, [])
+
+
+def load_quiz_to_session(uid: int, quiz_index: int) -> bool:
+    """Tanlangan quizni sessiyaga yuklaydi. Muvaffaqiyatli bo'lsa True qaytaradi."""
+    quizzes = _user_quizzes.get(uid, [])
+    if quiz_index < 0 or quiz_index >= len(quizzes):
+        return False
+    quiz = quizzes[quiz_index]
+    s = get_session(uid)
+    s["quiz_name"] = quiz["quiz_name"]
+    s["batches"]   = quiz["batches"]
+    s["open_time"] = quiz["open_time"]
+    s["state"]     = "ready"
+    return True

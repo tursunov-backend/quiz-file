@@ -22,7 +22,7 @@ from sessions import (
     group_sessions, group_ready_users, user_group,
     group_user_info, group_results,
     register_group_user, save_group_result, clear_group_results,
-    save_quiz, get_user_quizzes, load_quiz_to_session,
+    save_quiz_db, get_user_quizzes, load_quiz_to_session,
     save_solo_result, get_elapsed, build_group_result_text,
 )
 from quiz_runner import start_quiz, cancel_quiz_task, notify_answered
@@ -416,7 +416,7 @@ async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session["state"]     = "ready"
 
     batches   = build_batches(uid)
-    save_quiz(uid, session)
+    save_quiz_db(uid, session)
     quiz_name = session.get("quiz_name", "Quiz")
     time_text = f"{seconds} soniya" if seconds > 0 else "Vaqtsiz"
     total     = sum(len(b) for b in batches)

@@ -11,10 +11,10 @@ from config import TG_TOKEN, DATABASE_URL
 from database import init_db, close_db
 from handlers import (
     cmd_start, cmd_newquiz, cmd_myquiz, cmd_stop, cmd_help,
-    handle_menu_buttons, handle_text, handle_file,
+    handle_text, handle_file,
     handle_batch_size, handle_time_choice,
     handle_start_batch, handle_confirm_batch, handle_retry_batch,
-    handle_solo_ready, handle_resume_batch, handle_stop_batch,
+    handle_solo_ready,
     handle_stats, handle_lang,
     handle_inline_query, handle_poll_answer, handle_fallback,
     handle_group_start, handle_group_ready, handle_bot_added,
@@ -69,8 +69,8 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_confirm_batch, pattern=r"^confirmbatch:"))
     app.add_handler(CallbackQueryHandler(handle_retry_batch,   pattern=r"^retrybatch:"))
     app.add_handler(CallbackQueryHandler(handle_solo_ready,    pattern=r"^soloready:"))
-    app.add_handler(CallbackQueryHandler(handle_resume_batch,  pattern=r"^resumebatch:"))
-    app.add_handler(CallbackQueryHandler(handle_stop_batch,    pattern=r"^stopbatch:"))
+    app.add_handler(CallbackQueryHandler(handle_retry_batch,  pattern=r"^resumebatch:"))
+    app.add_handler(CallbackQueryHandler(handle_retry_batch,    pattern=r"^stopbatch:"))
     app.add_handler(CallbackQueryHandler(handle_stats,         pattern=r"^stats:"))
     app.add_handler(CallbackQueryHandler(handle_group_ready,   pattern=r"^gready:"))
 
@@ -83,7 +83,7 @@ def main() -> None:
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_file))
 
     menu_filter = filters.Regex(r"^(📝 Yangi test tuzish|📋 Testlarimni ko'rish|🌐 Til: O'zbek)$")
-    app.add_handler(MessageHandler(filters.TEXT & menu_filter & filters.ChatType.PRIVATE, handle_menu_buttons))
+    app.add_handler(MessageHandler(filters.TEXT & menu_filter & filters.ChatType.PRIVATE, handle_text))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
 
     log.info("QuizBot ishga tushdi...")
