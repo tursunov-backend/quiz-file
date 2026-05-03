@@ -13,8 +13,9 @@ from handlers import (
     cmd_start, cmd_newquiz, cmd_myquiz, cmd_stop, cmd_help,
     handle_text, handle_file,
     handle_batch_size, handle_time_choice,
-    handle_start_batch, handle_confirm_batch, handle_retry_batch,
     handle_solo_ready,
+    handle_start_batch, handle_confirm_batch,
+    handle_retry_batch, handle_resume_batch, handle_stop_batch,
     handle_stats, handle_lang,
     handle_inline_query, handle_poll_answer, handle_fallback,
     handle_group_start, handle_group_ready, handle_bot_added,
@@ -60,7 +61,6 @@ def main() -> None:
     # Guruh buyruqlari
     app.add_handler(CommandHandler("start", handle_group_start, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("stop",  cmd_stop,           filters=filters.ChatType.GROUPS))
-
     # Callback handlerlar
     app.add_handler(CallbackQueryHandler(handle_lang,          pattern=r"^(newquiz|myquiz|show_lang|lang:)"))
     app.add_handler(CallbackQueryHandler(handle_batch_size,    pattern=r"^bsize:"))
@@ -69,28 +69,23 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_confirm_batch, pattern=r"^confirmbatch:"))
     app.add_handler(CallbackQueryHandler(handle_retry_batch,   pattern=r"^retrybatch:"))
     app.add_handler(CallbackQueryHandler(handle_solo_ready,    pattern=r"^soloready:"))
-    app.add_handler(CallbackQueryHandler(handle_retry_batch,  pattern=r"^resumebatch:"))
-    app.add_handler(CallbackQueryHandler(handle_retry_batch,    pattern=r"^stopbatch:"))
+    app.add_handler(CallbackQueryHandler(handle_resume_batch,  pattern=r"^resumebatch:"))
+    app.add_handler(CallbackQueryHandler(handle_stop_batch,    pattern=r"^stopbatch:"))
     app.add_handler(CallbackQueryHandler(handle_stats,         pattern=r"^stats:"))
     app.add_handler(CallbackQueryHandler(handle_group_ready,   pattern=r"^gready:"))
-
     # Inline va poll
     app.add_handler(InlineQueryHandler(handle_inline_query))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
-
     # Xabar handlerlar
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_bot_added))
     app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, handle_file))
-
     menu_filter = filters.Regex(r"^(📝 Yangi test tuzish|📋 Testlarimni ko'rish|🌐 Til: O'zbek)$")
     app.add_handler(MessageHandler(filters.TEXT & menu_filter & filters.ChatType.PRIVATE, handle_text))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_text))
-
     log.info("QuizBot ishga tushdi...")
     app.run_polling(allowed_updates=[
         "message", "callback_query", "inline_query", "poll_answer", "my_chat_member"
     ])
-
 
 if __name__ == "__main__":
     main()

@@ -781,7 +781,7 @@ async def handle_group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ready_set.add(voter_uid)
     count = len(ready_set)
 
-    if count < 2:
+    if count < 1:
         owner_uid   = g_session["owner_uid"]
         quiz_name   = g_session["quiz_name"]
         batch_index = g_session.get("active_batch_index", 0)
@@ -904,7 +904,8 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 stats["wrong"] = stats.get("wrong", 0) + 1
 
-        notify_answered(owner_uid)
+        if active_poll.get(owner_uid) == poll_id:
+            notify_answered(owner_uid)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -988,4 +989,30 @@ async def handle_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     lang = get_session(uid).get("lang", "uz")
     await update.message.reply_text(
         t(lang, "new_quiz"), reply_markup=main_menu_kb(lang)
+    )
+
+async def handle_resume_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    uid         = update.effective_user.id
+    session     = get_session(uid)
+    parts       = query.data.split(":")
+    batch_index = int(parts[1])
+    start_idx   = int(parts[2]) if len(parts) > 2 else 0
+    session["state"] = "running"
+    await query.edit_message_text("▶️ Test davom ettirilmoqda...")
+    from quiz_runner import start_quiz
+    await start_quiz(uid, session, context,
+                     batch_index=batch_index,
+                     start_idx=start_idx)
+
+async def handle_stop_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    uid     = update.effective_user.id
+    session = get_session(uid)
+    lang    = session.get("lang", "uz")
+    reset_session(uid)
+    await query.edit_message_text(
+        t(lang, "cancelled") if "cancelled" in str(t(lang, "cancelled")) else "⏹ Test to'xtatildi.",
     )

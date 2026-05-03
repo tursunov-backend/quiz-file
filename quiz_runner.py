@@ -197,8 +197,8 @@ async def send_batch(
         try:
             sent = await context.bot.send_poll(
                 chat_id           = chat_id,
-                question          = f"[{idx+1}/{total_in_batch}] {q['question']}",
-                options           = opts,
+                question          = f"[{idx+1}/{total_in_batch}] {q['question']}"[:300],
+                options           = [o[:100] for o in opts],
                 type              = "quiz",
                 correct_option_id = correct_id,
                 is_anonymous      = False,
