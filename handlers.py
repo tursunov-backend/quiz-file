@@ -18,7 +18,7 @@ from parser import read_file, parse_blocks
 from database import save_quiz, get_user_quizzes, get_quiz_by_name
 from sessions import (
     sessions, poll_owner, active_poll,
-    get_session, reset_session, new_quiz_session,
+    get_session, reset_session, new_quiz_session, load_quiz_to_session,
     build_result_text, build_batches, _empty_stats,
     group_sessions, group_ready_users, user_group,
     group_user_info, group_results,
@@ -781,7 +781,7 @@ async def handle_group_ready(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ready_set.add(voter_uid)
     count = len(ready_set)
 
-    if count < 1:
+    if count < 2:
         owner_uid   = g_session["owner_uid"]
         quiz_name   = g_session["quiz_name"]
         batch_index = g_session.get("active_batch_index", 0)
@@ -908,12 +908,12 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 stats["correct"] = stats.get("correct", 0) + 1
             else:
                 stats["wrong"] = stats.get("wrong", 0) + 1
-
-        if active_poll.get(owner_uid) == poll_id:
+        if session and session.get("state") == "running" and active_poll.get(owner_uid) == poll_id:
             notify_answered(owner_uid)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
+        elif session and session.get("state") == "running":
+            # Vaqt o'tib kelgan javob — lekin hali running, flag qo'yamiz
+            from quiz_runner import _poll_answered_flag
+            _poll_answered_flag[owner_uid] = True
 # CALLBACK: til tanlash + menyu
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1007,8 +1007,9 @@ async def handle_resume_batch(update: Update, context: ContextTypes.DEFAULT_TYPE
     session["state"] = "running"
     await query.edit_message_text("▶️ Test davom ettirilmoqda...")
     from quiz_runner import start_quiz
-    await start_quiz(uid, session, context,
-                     batch_index=batch_index,
+    from quiz_runner import start_quiz
+    chat_id = query.message.chat_id if query.message else uid
+    await start_quiz(chat_id, uid, session, context,
                      start_idx=start_idx)
 
 async def handle_stop_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

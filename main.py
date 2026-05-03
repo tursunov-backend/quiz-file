@@ -62,7 +62,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", handle_group_start, filters=filters.ChatType.GROUPS))
     app.add_handler(CommandHandler("stop",  cmd_stop,           filters=filters.ChatType.GROUPS))
     # Callback handlerlar
-    app.add_handler(CallbackQueryHandler(handle_lang,          pattern=r"^(newquiz|myquiz|show_lang|lang:)"))
+    app.add_handler(CallbackQueryHandler(handle_lang,          pattern=r"^(newquiz|myquiz|show_lang|lang:|selectquiz:)"))
     app.add_handler(CallbackQueryHandler(handle_batch_size,    pattern=r"^bsize:"))
     app.add_handler(CallbackQueryHandler(handle_time_choice,   pattern=r"^time:"))
     app.add_handler(CallbackQueryHandler(handle_start_batch,   pattern=r"^startbatch:"))
