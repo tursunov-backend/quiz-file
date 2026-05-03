@@ -180,11 +180,7 @@ async def save_solo_result(uid: int, quiz_name: str, batch_idx: int,
         INSERT INTO solo_results (uid, quiz_name, batch_idx, correct, total, elapsed)
         VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (uid, quiz_name, batch_idx)
-        DO UPDATE SET
-            correct = EXCLUDED.correct,
-            total   = EXCLUDED.total,
-            elapsed = EXCLUDED.elapsed,
-            created_at = NOW()
+        DO NOTHING
     """, uid, quiz_name, batch_idx, correct, total, elapsed)
 
 
@@ -234,3 +230,16 @@ async def clear_group_results(chat_id: int, quiz_name: str) -> None:
         "DELETE FROM group_results WHERE chat_id = $1 AND quiz_name = $2",
         chat_id, quiz_name
     )
+async def get_quiz_stats(quiz_name: str) -> dict:
+    """Quiz bo'yicha umumiy statistika."""
+    row = await get_pool().fetchrow("""
+        SELECT 
+            COUNT(DISTINCT uid) as participants,
+            AVG(correct::float / NULLIF(total, 0) * 100) as avg_score
+        FROM solo_results
+        WHERE quiz_name = $1
+    """, quiz_name)
+    return {
+        "participants": row["participants"] or 0,
+        "avg_score":    round(row["avg_score"] or 0, 1),
+    }

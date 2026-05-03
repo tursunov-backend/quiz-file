@@ -15,6 +15,7 @@ from keyboards import (
     quiz_list_kb, quiz_batches_kb,
 )
 from parser import read_file, parse_blocks
+from database import save_quiz, get_user_quizzes, get_quiz_by_name
 from sessions import (
     sessions, poll_owner, active_poll,
     get_session, reset_session, new_quiz_session,
@@ -22,7 +23,7 @@ from sessions import (
     group_sessions, group_ready_users, user_group,
     group_user_info, group_results,
     register_group_user, save_group_result, clear_group_results,
-    save_quiz_db, get_user_quizzes, load_quiz_to_session,
+
     save_solo_result, get_elapsed, build_group_result_text,
 )
 from quiz_runner import start_quiz, cancel_quiz_task, notify_answered
@@ -124,7 +125,7 @@ async def cmd_myquiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     )
     chat_id = update.effective_chat.id if update.effective_chat else uid
 
-    quizzes = get_user_quizzes(uid)
+    quizzes = await get_user_quizzes(uid)
     if not quizzes:
         text = t(lang, "no_quiz")
         kb   = main_menu_kb(lang)
@@ -137,7 +138,7 @@ async def cmd_myquiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     lines = []
     for i, q in enumerate(quizzes, 1):
         name      = q["quiz_name"] or f"Test {i}"
-        total     = q.get("total", 0)
+        total     = sum(len(b) for b in q.get("batches", []))
         batches_n = len(q.get("batches", []))
         open_time = q.get("open_time")
         time_lbl  = f"{open_time} soniya" if open_time else "Vaqtsiz"
@@ -416,7 +417,7 @@ async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session["state"]     = "ready"
 
     batches   = build_batches(uid)
-    save_quiz_db(uid, session)
+    await save_quiz(uid, session.get("quiz_name","Quiz"), session.get("questions",[]), session.get("batches",[]), session.get("open_time"), session.get("batch_size",10))
     quiz_name = session.get("quiz_name", "Quiz")
     time_text = f"{seconds} soniya" if seconds > 0 else "Vaqtsiz"
     total     = sum(len(b) for b in batches)
