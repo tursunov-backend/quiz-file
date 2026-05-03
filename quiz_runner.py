@@ -13,6 +13,7 @@ log = logging.getLogger(__name__)
 
 _tasks:         dict[int, asyncio.Task]  = {}
 _poll_answered: dict[int, asyncio.Event] = {}
+_poll_answered_flag: dict[int, bool] = {}
 
 
 async def send_countdown(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -27,6 +28,7 @@ async def send_countdown(chat_id: int, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 def notify_answered(uid: int) -> None:
+    _poll_answered_flag[uid] = True
     event = _poll_answered.get(uid)
     if event:
         event.set()
@@ -222,7 +224,7 @@ async def send_batch(
             await asyncio.sleep(1)
             continue
 
-        answered_before = stats.get("correct", 0) + stats.get("wrong", 0)
+
 
         # poll_sent_at uzatiladi — vaqtni aniq hisoblash uchun
         ok = await wait_for_answer_or_timeout(open_time, uid, session, is_group, poll_sent_at)
@@ -241,8 +243,8 @@ async def send_batch(
             someone_answered = len(group_results.get(poll_key, set())) > 0
             group_results.pop(poll_key, None)
         else:
-            answered_after   = stats.get("correct", 0) + stats.get("wrong", 0)
-            someone_answered = answered_after > answered_before
+            someone_answered = _poll_answered_flag.get(uid, False)
+            _poll_answered_flag.pop(uid, None)
 
         if someone_answered:
             no_answer_streak = 0

@@ -872,7 +872,12 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         voter_stats["elapsed"] = _time.time() - voter_stats["started_at"]
 
         group_results[chat_id][voter_uid] = voter_stats
-
+        group_results[chat_id][voter_uid] = voter_stats
+        # poll_answered flag qo'yamiz
+        poll_key = f"poll_answered:{poll_id}"
+        if poll_key not in group_results:
+            group_results[poll_key] = set()
+        group_results[poll_key].add(voter_uid)
         if voter_uid not in group_user_info:
             register_group_user(
                 uid        = voter_uid,
