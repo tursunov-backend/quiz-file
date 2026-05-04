@@ -16,6 +16,7 @@ from keyboards import (
 )
 from parser import read_file, parse_blocks
 from database import save_quiz, get_user_quizzes, get_quiz_by_name
+from sessions import get_user_quizzes_db
 from sessions import (
     sessions, poll_owner, active_poll,
     get_session, reset_session, new_quiz_session, load_quiz_to_session,
@@ -168,14 +169,19 @@ async def handle_select_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE)
     session    = get_session(uid)
     lang       = session.get("lang", "uz")
 
-    ok = load_quiz_to_session(uid, quiz_index)
-    if not ok:
+    quizzes = await get_user_quizzes_db(uid)
+    if quiz_index < 0 or quiz_index >= len(quizzes):
         await query.answer("⚠️ Test topilmadi!", show_alert=True)
         return
-
-    session   = get_session(uid)
-    quiz_name = session.get("quiz_name", "Quiz")
-    batches   = session.get("batches", [])
+    quiz = quizzes[quiz_index]
+    session["quiz_name"] = quiz["quiz_name"]
+    session["questions"] = quiz["questions"]
+    session["batches"]   = quiz["batches"]
+    session["open_time"] = quiz["open_time"]
+    session["batch_size"]= quiz.get("batch_size", 10)
+    session["state"]     = "ready"
+    quiz_name = quiz["quiz_name"]
+    batches   = quiz["batches"]
     open_time = session.get("open_time")
     total     = sum(len(b) for b in batches)
     time_lbl  = f"{open_time} soniya" if open_time else "Vaqtsiz"
@@ -1047,9 +1053,14 @@ async def handle_stop_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     uid     = update.effective_user.id
     session = get_session(uid)
     lang    = session.get("lang", "uz")
+    result_text = build_result_text(uid)
+    quiz_name  = session.get("quiz_name", "")
+    batch_index = session.get("active_batch_index", 0)
     reset_session(uid)
     await query.edit_message_text(
-        t(lang, "cancelled") if "cancelled" in str(t(lang, "cancelled")) else "⏹ Test to'xtatildi.",
+        result_text,
+        parse_mode="Markdown",
+        reply_markup=result_kb(uid, quiz_name, batch_index=batch_index),
     )
 
 async def handle_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
