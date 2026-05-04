@@ -10,7 +10,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from keyboards import (
-    main_menu_kb, batch_size_kb, time_kb,
+    main_menu_kb, batch_size_kb, time_kb, shuffle_kb,
     batch_card_kb, group_ready_kb, result_kb, lang_kb,
     quiz_list_kb, quiz_batches_kb,
 )
@@ -66,7 +66,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
                 if not batches or batch_index >= len(batches):
                     await update.message.reply_text(
-                        "⚠️ Test topilmadi yoki muddati o'tgan.",
+                        " Test topilmadi yoki muddati o'tgan.",
                         reply_markup=main_menu_kb(lang),
                     )
                     return
@@ -397,6 +397,55 @@ async def handle_batch_size(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 # CALLBACK: vaqt tanlash
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CALLBACK: aralashtirish tanlash
+# ══════════════════════════════════════════════════════════════════════════════
+async def handle_shuffle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import random
+    query = update.callback_query
+    await query.answer()
+    uid     = update.effective_user.id
+    session = get_session(uid)
+    if session.get("state") != "waiting_shuffle":
+        await query.answer("⚠️ Avval fayl yuboring!", show_alert=True)
+        return
+    chat_id = _get_chat_id(update)
+    if chat_id is None:
+        await query.answer("⚠️ Chat aniqlanmadi!", show_alert=True)
+        return
+
+    shuffle = query.data.split(":")[1] == "1"
+    session["shuffle"] = shuffle
+
+    if shuffle:
+        random.shuffle(session["questions"])
+
+    session["state"] = "ready"
+    batches   = build_batches(uid)
+    await save_quiz(uid, session.get("quiz_name","Quiz"), session.get("questions",[]), session.get("batches",[]), session.get("open_time"), session.get("batch_size",10))
+    quiz_name = session.get("quiz_name", "Quiz")
+    seconds   = session.get("open_time") or 0
+    time_text = f"{seconds} soniya" if seconds > 0 else "Vaqtsiz"
+    total     = sum(len(b) for b in batches)
+    lang      = session.get("lang", "uz")
+    await query.edit_message_text(
+        t(lang, "batches_ready", time=time_text, name=quiz_name,
+          total=total, batches=len(batches)),
+        parse_mode="Markdown",
+    )
+    start = 0
+    for i, batch in enumerate(batches):
+        end = start + len(batch)
+        await context.bot.send_message(
+            chat_id      = chat_id,
+            text         = t(lang, "batch_card", n=i+1, start=start+1,
+                             end=end, count=len(batch), time=time_text),
+            parse_mode   = "Markdown",
+            reply_markup = batch_card_kb(uid, i),
+        )
+        start = end
+
 async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -414,32 +463,12 @@ async def handle_time_choice(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     seconds              = int(query.data.split(":")[1])
     session["open_time"] = seconds if seconds > 0 else None
-    session["state"]     = "ready"
-
-    batches   = build_batches(uid)
-    await save_quiz(uid, session.get("quiz_name","Quiz"), session.get("questions",[]), session.get("batches",[]), session.get("open_time"), session.get("batch_size",10))
-    quiz_name = session.get("quiz_name", "Quiz")
-    time_text = f"{seconds} soniya" if seconds > 0 else "Vaqtsiz"
-    total     = sum(len(b) for b in batches)
+    session["state"]     = "waiting_shuffle"
     lang      = session.get("lang", "uz")
-
     await query.edit_message_text(
-        t(lang, "batches_ready", time=time_text, name=quiz_name,
-          total=total, batches=len(batches)),
-        parse_mode="Markdown",
+        "🔀 Savollarni aralashtirish kerakmi?",
+        reply_markup=shuffle_kb(),
     )
-
-    start = 0
-    for i, batch in enumerate(batches):
-        end = start + len(batch)
-        await context.bot.send_message(
-            chat_id      = chat_id,
-            text         = t(lang, "batch_card", n=i+1, start=start+1,
-                             end=end, count=len(batch), time=time_text),
-            parse_mode   = "Markdown",
-            reply_markup = batch_card_kb(uid, i),
-        )
-        start = end
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1021,4 +1050,79 @@ async def handle_stop_batch(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     reset_session(uid)
     await query.edit_message_text(
         t(lang, "cancelled") if "cancelled" in str(t(lang, "cancelled")) else "⏹ Test to'xtatildi.",
+    )
+
+async def handle_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    uid     = update.effective_user.id
+    session = get_session(uid)
+    if session.get("state") != "waiting_shuffle":
+        return
+
+    do_shuffle = query.data.split(":")[1] == "yes"
+    session["shuffle"] = do_shuffle
+    session["state"]   = "ready"
+
+    import random
+    questions = session.get("questions", [])
+    if do_shuffle:
+        questions = questions[:]
+        random.shuffle(questions)
+
+    size    = session.get("batch_size", 30)
+    batches = [questions[i:i+size] for i in range(0, len(questions), size)]
+    session["batches"] = batches
+
+    await save_quiz(uid, session.get("quiz_name","Quiz"), session.get("questions",[]),
+                    batches, session.get("open_time"), session.get("batch_size",10))
+
+    quiz_name = session.get("quiz_name", "Quiz")
+    open_time = session.get("open_time")
+    time_text = f"{open_time} soniya" if open_time else "Vaqtsiz"
+    total     = sum(len(b) for b in batches)
+    lang      = session.get("lang", "uz")
+    shuffle_text = " Aralashtirildi" if do_shuffle else " Tartibda"
+
+    await query.edit_message_text(
+        f"{shuffle_text}\n\n" + t(lang, "batches_ready", time=time_text, name=quiz_name,
+          total=total, batches=len(batches)),
+        parse_mode="Markdown",
+    )
+
+
+async def handle_shuffle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    uid     = update.effective_user.id
+    session = get_session(uid)
+    if session.get("state") != "waiting_shuffle":
+        return
+
+    import random
+    do_shuffle = query.data.split(":")[1] == "yes"
+    questions  = session.get("questions", [])
+    if do_shuffle:
+        questions = questions[:]
+        random.shuffle(questions)
+
+    size    = session.get("batch_size", 30)
+    batches = [questions[i:i+size] for i in range(0, len(questions), size)]
+    session["batches"] = batches
+    session["state"]   = "ready"
+
+    await save_quiz(uid, session.get("quiz_name", "Quiz"), session.get("questions", []),
+                    batches, session.get("open_time"), session.get("batch_size", 10))
+
+    quiz_name   = session.get("quiz_name", "Quiz")
+    open_time   = session.get("open_time")
+    time_text   = f"{open_time} soniya" if open_time else "Vaqtsiz"
+    total       = sum(len(b) for b in batches)
+    lang        = session.get("lang", "uz")
+    shuffle_txt = "✅ Savollar aralashtirildi" if do_shuffle else "➡️ Savollar tartibda"
+
+    await query.edit_message_text(
+        f"{shuffle_txt}\n\n" + t(lang, "batches_ready", time=time_text, name=quiz_name,
+          total=total, batches=len(batches)),
+        parse_mode="Markdown",
     )

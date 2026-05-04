@@ -139,3 +139,19 @@ def quiz_batches_kb(uid: int, quiz_index: int, batches: list,
             )
         ])
     return InlineKeyboardMarkup(rows)
+
+def shuffle_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Ha, aralashtir", callback_data="shuffle:yes"),
+            InlineKeyboardButton("❌ Yo'q, tartibda", callback_data="shuffle:no"),
+        ]
+    ])
+
+def shuffle_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Ha, aralashtir", callback_data="shuffle:yes"),
+            InlineKeyboardButton("❌ Yo'q, tartibda", callback_data="shuffle:no"),
+        ]
+    ])

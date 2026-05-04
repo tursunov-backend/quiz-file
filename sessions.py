@@ -87,8 +87,11 @@ def new_quiz_session(uid: int) -> dict:
 
 
 def build_batches(uid: int) -> list:
+    import random
     session   = get_session(uid)
     questions = session.get("questions", [])
+    questions = questions[:]
+    random.shuffle(questions)
     size      = session.get("batch_size", 30)
     batches   = [questions[i:i + size] for i in range(0, len(questions), size)]
     session["batches"] = batches

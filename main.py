@@ -12,10 +12,10 @@ from database import init_db, close_db
 from handlers import (
     cmd_start, cmd_newquiz, cmd_myquiz, cmd_stop, cmd_help,
     handle_text, handle_file,
-    handle_batch_size, handle_time_choice,
+    handle_batch_size, handle_time_choice, handle_shuffle_choice,
     handle_solo_ready,
     handle_start_batch, handle_confirm_batch,
-    handle_retry_batch, handle_resume_batch, handle_stop_batch,
+    handle_retry_batch, handle_resume_batch, handle_stop_batch, handle_shuffle,
     handle_stats, handle_lang,
     handle_inline_query, handle_poll_answer, handle_fallback,
     handle_group_start, handle_group_ready, handle_bot_added,
@@ -65,6 +65,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(handle_lang,          pattern=r"^(newquiz|myquiz|show_lang|lang:|selectquiz:)"))
     app.add_handler(CallbackQueryHandler(handle_batch_size,    pattern=r"^bsize:"))
     app.add_handler(CallbackQueryHandler(handle_time_choice,   pattern=r"^time:"))
+    app.add_handler(CallbackQueryHandler(handle_shuffle_choice, pattern=r"^shuffle:"))
     app.add_handler(CallbackQueryHandler(handle_start_batch,   pattern=r"^startbatch:"))
     app.add_handler(CallbackQueryHandler(handle_confirm_batch, pattern=r"^confirmbatch:"))
     app.add_handler(CallbackQueryHandler(handle_retry_batch,   pattern=r"^retrybatch:"))
